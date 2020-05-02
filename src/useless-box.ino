@@ -2,6 +2,7 @@
 #include <Arduino.h>  // To add IntelliSense for platform constants.
 
 // Third-party libraries.
+#include <ESP8266WiFi.h> //ned this to set Wemos to sleep
 
 // My classes.
 #include "speed-servo.h"
@@ -10,15 +11,20 @@
 
 #include "config.h"  // To store configuration and secrets.
 
+#define FPM_SLEEP_MAX_TIME 0xFFFFFFF
+
 SpeedServo lidServo;
 SpeedServo switchServo;
 StatusLed led;
 ProximitySensor sensor;
+os_timer_t myTimer;
 
 int lastSwitchState = 0;
+int resetTime = 15000;
 long playCount = 0;
 bool isLidOpen = false;
 bool monitorSensor = false;
+bool tickOccured = false;
 
 void setup() {
   initSerial();
@@ -26,9 +32,28 @@ void setup() {
   initLed();
   initSensor();
   pinMode(PIN_SWITCH, INPUT);
+  initTimer();
 
   Serial.printf("Application version: %s\n", APP_VERSION);
   Serial.println("Setup completed.");
+}
+
+
+void timerCallback(void *pArg)
+{
+  tickOccured = true;
+} 
+
+void initTimer(void)
+{
+  os_timer_setfn(&myTimer, timerCallback, NULL);
+  setTimer();
+  tickOccured = false;
+}
+
+void setTimer(){
+os_timer_arm(&myTimer, resetTime, true);
+Serial.println("set Timer");
 }
 
 void initSerial() {
@@ -50,13 +75,38 @@ void initLed() {
   led.turnOff();
 }
 
+
 void initSensor() {
   sensor.attach(PIN_SENSOR_SDA, PIN_SENSOR_SCL, SENSOR_TRIGGER_THRESHOLD);
+}
+
+void lightSleep(){
+  Serial.println("going to light sleep");
+  gpio_pin_wakeup_enable(GPIO_ID_PIN(PIN_SWITCH), GPIO_PIN_INTR_LOLEVEL);
+  wifi_set_opmode(NULL_MODE);
+  wifi_fpm_set_sleep_type(LIGHT_SLEEP_T);
+  wifi_fpm_open();
+  wifi_fpm_set_wakeup_cb(callback);
+  wifi_fpm_do_sleep(FPM_SLEEP_MAX_TIME);
+}
+
+void callback()
+{
+  Serial1.println("Callback");
+  Serial.flush();
 }
 
 void loop() {
   int switchState = digitalRead(PIN_SWITCH);
   boolean isSwitchTurnedOn = (switchState != lastSwitchState) && (switchState == LOW);
+
+  if (tickOccured == true)
+  {
+    Serial.println("Tick Occurred");
+    resetBox();    
+    lightSleep();
+    delay(250);
+  }
 
   if (isSwitchTurnedOn) {
     led.turnOn();
@@ -66,6 +116,7 @@ void loop() {
   } else {
     // Check the proximity sensor.
     if (sensor.isInRange()) {
+      setTimer();
       if (!isLidOpen && monitorSensor) {
         openLidFast();
         isLidOpen = true;
@@ -84,45 +135,58 @@ void loop() {
   delay(250);
 }
 
+void resetBox(){
+  playCount = 0;
+  monitorSensor = false;
+  tickOccured = false;
+  Serial.println("reset box");
+}
+
 void run() {
   switch (playCount % 10) {
     case 0:
-    case 1:
-      runSlow();
-      break;
-    case 2:
-      runWaitThenFast();
-      break;
-    case 3:
-      runFast();
-      break;
-    case 4:
-      runFastThenClap();
-      monitorSensor = true;
-      break;
-    case 5:
-      runOpenCloseThenFast();
-      monitorSensor = false;
-      break;
-    case 6:
-      runPeekThenFast();
-      break;
-    case 7:
-      runFastWithDelay();
-      monitorSensor = true;
-      break;
-    case 8:
-      runClap();
-      monitorSensor = false;
-      break;
-    case 9:
-      runHalf();
-      break;
-    default:
-      break;
-  }
+      runFastThenClap();   
+        break;
+      case 1:
+        runSlow();
+        monitorSensor = true;
+        break;
+      case 2:
+        closeLidSlow();
+        runWaitThenFast();
+        break;
+      case 3:
+        closeLidFast();
+        runFast();
+        break;
+      case 4:
+        runFastThenClap();
+        monitorSensor = true;
+        break;
+      case 5:
+        runOpenCloseThenFast();
+        monitorSensor = false;
+        break;
+      case 6:
+        runPeekThenFast();
+        break;
+      case 7:
+        runFastWithDelay();
+        monitorSensor = true;
+        break;
+      case 8:
+        runClap();
+        monitorSensor = false;
+        break;
+      case 9:
+        runHalf();
+        break;
+      default:
+        break;
+      }
 
-  playCount++;
+      playCount++;
+      setTimer();
 }
 
 void runSlow() {
@@ -134,10 +198,12 @@ void runSlow() {
 void runWaitThenFast() {
   delay(5000);
   flipSwitchFast();
+  closeLidSlow();
 }
 
 void runFast() {
   flipSwitchFast();
+  closeLidFast();
 }
 
 void runFastThenClap() {
@@ -171,8 +237,6 @@ void runFastWithDelay() {
 void runClap() {
   clapLid();
   clapLid();
-  clapLid();
-  clapLid();
   openLidFast();
   flipSwitchFast();
   closeLidFast();
@@ -202,6 +266,10 @@ void closeLidFast() {
 }
 
 void clapLid() {
+  openLidFast();
+  closeLidFast();
+  openLidFast();
+  closeLidFast();
   openLidFast();
   closeLidFast();
 }
